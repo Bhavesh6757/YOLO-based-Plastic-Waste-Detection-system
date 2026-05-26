@@ -1,260 +1,265 @@
-
-/*
- * ============================================================
- *  WASTE SORTING ROBOTIC ARM — ARDUINO UNO
- *  4 Servos: Base + Shoulder + Elbow + Gripper
- *
- *  BOOT SEQUENCE:
- *    1. All motors go to 0° first
- *    2. Then move to PICKUP position (90°)
- *    3. Wait for waste
- *
- *  SORT SEQUENCE:
- *    1. Grip waste at pickup position (90°)
- *    2. Rotate base to correct bin
- *    3. Drop waste
- *    4. Return to pickup position (90°)
- *
- *  Base Bin Angles:
- *    PET  →   0°
- *    HDPE →  36°
- *    PVC  →  72°
- *    PICKUP→  90° (always picks from here)
- *    LDPE → 108°
- *    PP   → 144°
- *    PS   → 180°
- *
- *  Pins:
- *    PIN 9  → Base
- *    PIN 10 → Shoulder
- *    PIN 11 → Elbow
- *    PIN 6  → Gripper
- * ============================================================
- */
+// ============================================================
+//   4-DOF Robotic Arm — YOLOv5 Plastic Waste Sorter
+//   Servos : Base(3) | Shoulder(5) | Elbow(6) | Gripper(9)
+//   Baud   : 115200  (matches Python)
+//   Input  : "pet" | "hdpe" | "pvc" | "ldpe" | "pp" | "ps"
+//   Output : "READY" (sent at boot + after every sequence)
+// ============================================================
 
 #include <Servo.h>
 
-// ─── PINS ────────────────────────────────────────────────────
-#define PIN_BASE      9
-#define PIN_SHOULDER  10
-#define PIN_ELBOW     11
-#define PIN_GRIPPER   6
-
-// ─── SERVO OBJECTS ───────────────────────────────────────────
+// ---------- Servo Objects ----------
 Servo baseServo;
 Servo shoulderServo;
 Servo elbowServo;
 Servo gripperServo;
 
-// ─── BIN ANGLES ──────────────────────────────────────────────
-#define BIN_PET    0
-#define BIN_HDPE   36
-#define BIN_PVC    72
-#define BIN_LDPE   108
-#define BIN_PP     144
-#define BIN_PS     180
+// ---------- Pin Definitions ----------
+#define BASE_PIN     3
+#define SHOULDER_PIN 5
+#define ELBOW_PIN    6
+#define GRIPPER_PIN  9
 
-// ─── PICKUP POSITION ─────────────────────────────────────────
-#define PICKUP_BASE      90   // base angle for pickup
-#define PICKUP_SHOULDER  0   // shoulder down at pickup
-#define PICKUP_ELBOW     50   // elbow extended at pickup
+// ---------- Angle Tracking ----------
+int currentBase     = 90;
+int currentShoulder = 90;
+int currentElbow    = 90;
+int currentGripper  = 90;
 
-// ─── TRAVEL POSITION (safe for rotation) ─────────────────────
-#define TRAVEL_SHOULDER  20    // shoulder up for safe rotation
-#define TRAVEL_ELBOW     0    // elbow retracted for safe rotation
+// ---------- Assigned base angle (set per waste type) ----------
+int assignedBaseAngle = 90;
 
-// ─── GRIPPER ─────────────────────────────────────────────────
-#define GRIPPER_OPEN     0
-#define GRIPPER_CLOSE    92
+// ============================================================
+//  PLASTIC TYPE → BASE ANGLE MAP
+//  Spread 6 bins evenly across 30°–150° servo range
+//  pet=30 | hdpe=54 | pvc=78 | ldpe=102 | pp=126 | ps=150
+// ============================================================
+int getBaseAngle(String wType) {
+  if (wType == "pet")  return 30;
+  if (wType == "hdpe") return 54;
+  if (wType == "pvc")  return 78;
+  if (wType == "ldpe") return 102;
+  if (wType == "pp")   return 126;
+  if (wType == "ps")   return 150;
+  return -1;   // unknown
+}
 
-// ─── SPEED CONTROL ───────────────────────────────────────────
-#define SPEED_BASE       25 //30
-#define SPEED_SHOULDER   25 //15
-#define SPEED_ELBOW      25 //15
-#define SPEED_GRIPPER    25 //20
+// ============================================================
+//   HELPER — print all four angles in one line
+// ============================================================
+void printAngles(int b, int sh, int el, int gr) {
+  Serial.print("    Angles => Base: "); Serial.print(b);
+  Serial.print(" | Shoulder: ");        Serial.print(sh);
+  Serial.print(" | Elbow: ");           Serial.print(el);
+  Serial.print(" | Gripper: ");         Serial.println(gr);
+}
 
-// ─── DELAY BETWEEN STEPS ─────────────────────────────────────
-#define STEP_DELAY       800  // 5 seconds
+// ============================================================
+//   HELPER — write all four servos + update tracking vars
+// ============================================================
+// void smoothMove(int b, int sh, int el, int gr) {
+//   baseServo.write(b);
+//   shoulderServo.write(sh);
+//   elbowServo.write(el);
+//   gripperServo.write(gr);
+//   currentBase     = b;
+//   currentShoulder = sh;
+//   currentElbow    = el;
+//   currentGripper  = gr;
+// }
+void smoothMove(int targetB, int targetS, int targetE) {
 
-// ─── TRACKED POSITIONS ───────────────────────────────────────
-int posBase     = 0;
-int posShoulder = 0;
-int posElbow    = 0;
-int posGripper  = 0;
+  while (currentBase != targetB ||
+         currentShoulder != targetS ||
+         currentElbow != targetE) {
 
-// ─── SLOW MOVE ───────────────────────────────────────────────
-void moveSlowly(Servo &srv, int &currentPos, int targetPos, int stepDelay = 15) {
-  if (currentPos < targetPos) {
-    for (int pos = currentPos; pos <= targetPos; pos++) {
-      srv.write(pos);
-      delay(stepDelay);
-    }
-  } else {
-    for (int pos = currentPos; pos >= targetPos; pos--) {
-      srv.write(pos);
-      delay(stepDelay);
-    }
+    if (currentBase < targetB) currentBase++;
+    else if (currentBase > targetB) currentBase--;
+
+    if (currentShoulder < targetS) currentShoulder++;
+    else if (currentShoulder > targetS) currentShoulder--;
+
+    if (currentElbow < targetE) currentElbow++;
+    else if (currentElbow > targetE) currentElbow--;
+
+    baseServo.write(currentBase);
+    shoulderServo.write(currentShoulder);
+    elbowServo.write(currentElbow);
+
+    delay(20);
   }
-  currentPos = targetPos;
 }
 
-// ─── GO TO PICKUP POSITION ───────────────────────────────────
-void goToPickup() {
-  Serial.println("STATUS: Moving to pickup position");
+// ============================================================
+//   STEP FUNCTIONS
+// ============================================================
 
-  // Rotate base to 90°
-  moveSlowly(baseServo, posBase, PICKUP_BASE, SPEED_BASE);
-  delay(500);
-
-  // Extend elbow
-  moveSlowly(elbowServo, posElbow, PICKUP_ELBOW, SPEED_ELBOW);  //20 -> posShoulder
-  delay(1000);
-
-  moveSlowly(gripperServo, posGripper, GRIPPER_OPEN, SPEED_GRIPPER);
-
-  moveSlowly(shoulderServo, posShoulder, PICKUP_SHOULDER, SPEED_SHOULDER+15);
-
-  // Lower shoulder to pickup height
-  //moveSlowly(shoulderServo, posShoulder, PICKUP_SHOULDER, SPEED_SHOULDER);
-  //delay(1000);
-
-  // Open gripper — ready to receive waste
-  //moveSlowly(gripperServo, posGripper, GRIPPER_OPEN, SPEED_GRIPPER);
-
-  Serial.println("STATUS: At pickup position — waiting for waste");
-  Serial.println("READY");
+void moveToPickup() {
+  Serial.println("  ----------------------------------------");
+  Serial.println("  [STEP 1] Pickup Position");
+  Serial.print("  Before "); printAngles(currentBase,currentShoulder,currentElbow,currentGripper);
+  smoothMove(90, 90, 90);  // gripper OPEN
+  gripperServo.write(90);
+  delay(800);
+  Serial.print("  After  "); printAngles(currentBase,currentShoulder,currentElbow,currentGripper);
+  Serial.println("  >> Step 1 Completed");
 }
 
-// ─── SORT FUNCTION ───────────────────────────────────────────
-void sortWaste(int binAngle) {
-
-  // ── GRIP WASTE AT PICKUP POSITION ────────────────────────
-
-  // Step 1 — Close gripper to grip waste
-  Serial.println("STATUS: Step 1 — Gripping waste");
-  moveSlowly(gripperServo, posGripper, GRIPPER_CLOSE, SPEED_GRIPPER);
-  delay(STEP_DELAY);
-
-  // ── LIFT TO TRAVEL POSITION ───────────────────────────────
-
-  // Step 2 — Raise shoulder up for safe travel
-  Serial.println("STATUS: Step 2 — Raising shoulder");
-  moveSlowly(shoulderServo, posShoulder, TRAVEL_SHOULDER, SPEED_SHOULDER+15);
-  Serial.println(posShoulder);
-  delay(1000);
-
-  // Step 3 — Retract elbow for safe rotation
-  Serial.println("STATUS: Step 3 — Retracting elbow");
-  moveSlowly(elbowServo, posElbow, TRAVEL_ELBOW, SPEED_ELBOW);
-  delay(1000);
-
-  // ── ROTATE TO BIN ─────────────────────────────────────────
-
-  // Step 4 — Rotate base to correct bin
-  Serial.print("STATUS: Step 4 — Rotating to bin at ");
-  Serial.print(binAngle);
-  Serial.println(" degrees");
-  moveSlowly(baseServo, posBase, binAngle, SPEED_BASE);
-  delay(STEP_DELAY);
-
-  // ── DROP WASTE ────────────────────────────────────────────
-
-  // Step 5 — Extend elbow over bin
-  Serial.println("STATUS: Step 5 — Extending elbow over bin");
-  moveSlowly(elbowServo, posElbow, PICKUP_ELBOW, SPEED_ELBOW);
-  delay(1000);
-
-  Serial.println("STATUS: Step 7 — Releasing waste");
-  moveSlowly(gripperServo, posGripper, GRIPPER_OPEN, SPEED_GRIPPER);
-  delay(STEP_DELAY);
-
-  // Step 6 — Lower shoulder to drop height
-  Serial.println("STATUS: Step 6 — Lowering to drop");
-  moveSlowly(shoulderServo, posShoulder, PICKUP_SHOULDER, SPEED_SHOULDER+15);   //PICKUP
-  delay(1000);
-
-  // Step 7 — Open gripper to release
-  //Serial.println("STATUS: Step 7 — Releasing waste");
-  //moveSlowly(gripperServo, posGripper, GRIPPER_OPEN, SPEED_GRIPPER);
-  //delay(STEP_DELAY);
-
-  // ── RETURN TO PICKUP POSITION ─────────────────────────────
-
-  // Step 8 — Raise shoulder
-  Serial.println("STATUS: Step 8 — Raising shoulder");
-  moveSlowly(shoulderServo, posShoulder, TRAVEL_SHOULDER, SPEED_SHOULDER+15);   
-  delay(STEP_DELAY);
-
-  // Step 9 — Retract elbow
-  Serial.println("STATUS: Step 9 — Retracting elbow");
-  moveSlowly(elbowServo, posElbow, TRAVEL_ELBOW, SPEED_ELBOW);
-  delay(1000);
-
-  // Step 10 — Rotate base back to pickup (90°)
-  Serial.println("STATUS: Step 10 — Returning to pickup position");
-  moveSlowly(baseServo, posBase, PICKUP_BASE, SPEED_BASE);
-  delay(STEP_DELAY);
-
-  // Step 11 — Extend elbow to pickup
-  moveSlowly(elbowServo, posElbow, PICKUP_ELBOW, SPEED_ELBOW);
-  delay(500);
-  
-  moveSlowly(gripperServo, posGripper, GRIPPER_OPEN, SPEED_GRIPPER);
-  // Step 12 — Lower shoulder to pickup height
-  moveSlowly(shoulderServo, posShoulder, PICKUP_SHOULDER, SPEED_SHOULDER);
-  delay(500);
-
-  // Step 13 — Open gripper ready for next waste
-  //moveSlowly(gripperServo, posGripper, GRIPPER_OPEN, SPEED_GRIPPER);
-
-  Serial.println("STATUS: Back at pickup position — ready");
-  Serial.println("READY");
+void grabWaste() {
+  Serial.println("  ----------------------------------------");
+  Serial.println("  [STEP 2] Grab Waste");
+  Serial.print("  Before "); printAngles(currentBase,currentShoulder,currentElbow,currentGripper);
+  smoothMove(90, 10, 100);
+  for (int g = 90; g >= 20; g--) {
+  gripperServo.write(160);
+  currentGripper = 160;
+  delay(15);
+}
+currentGripper = 20;
+  delay(800);
+  Serial.print("  After  "); printAngles(currentBase,currentShoulder,currentElbow,currentGripper);
+  Serial.println("  >> Step 2 Completed");
+  delay(800);
 }
 
-// ─── SETUP ───────────────────────────────────────────────────
+void liftUp() {
+  Serial.println("  ----------------------------------------");
+  Serial.println("  [STEP 3] Lift Up");
+  Serial.print("  Before "); printAngles(currentBase,currentShoulder,currentElbow,currentGripper);
+  smoothMove(90, 60, 100);
+  delay(800);
+  Serial.print("  After  "); printAngles(currentBase,currentShoulder,currentElbow,currentGripper);
+  Serial.println("  >> Step 3 Completed");
+  delay(800);
+}
+
+void rotateBase() {
+  Serial.println("  ----------------------------------------");
+  Serial.println("  [STEP 4] Rotate Base");
+  Serial.print("  Target base angle: "); Serial.println(assignedBaseAngle);
+  Serial.print("  Before "); printAngles(currentBase,currentShoulder,currentElbow,currentGripper);
+  smoothMove(assignedBaseAngle, currentShoulder, currentElbow);
+  delay(1000);
+  Serial.print("  After  "); printAngles(currentBase,currentShoulder,currentElbow,currentGripper);
+  Serial.println("  >> Step 4 Completed");
+  delay(800);
+}
+
+void dropWaste() {
+  Serial.println("  ----------------------------------------");
+  Serial.println("  [STEP 5] Drop Position");
+  Serial.print("  Before "); printAngles(currentBase,currentShoulder,currentElbow,currentGripper);
+  smoothMove(assignedBaseAngle, 30, 70);
+  for (int g = 20; g <= 90; g++) {
+  gripperServo.write(90);
+  currentGripper = 90;
+  delay(15);
+}
+currentGripper = 90;
+  delay(800);
+  Serial.print("  After  "); printAngles(currentBase,currentShoulder,currentElbow,currentGripper);
+  Serial.println("  >> Step 5 Completed");
+  delay(800);
+}
+
+void liftAfterDrop() {
+  Serial.println("  ----------------------------------------");
+  Serial.println("  [STEP 6] Lift After Drop");
+  Serial.print("  Before "); printAngles(currentBase,currentShoulder,currentElbow,currentGripper);
+  smoothMove(assignedBaseAngle, 60, 100);
+  delay(800);
+  Serial.print("  After  "); printAngles(currentBase,currentShoulder,currentElbow,currentGripper);
+  Serial.println("  >> Step 6 Completed");
+  delay(800);
+}
+
+void returnToPickup() {
+  Serial.println("  ----------------------------------------");
+  Serial.println("  [STEP 7] Return to Pickup");
+  Serial.print("  Before "); printAngles(currentBase,currentShoulder,currentElbow,currentGripper);
+  smoothMove(90, 90, 90);  // gripper OPEN
+  gripperServo.write(90);
+  delay(800);
+  Serial.print("  After  "); printAngles(currentBase,currentShoulder,currentElbow,currentGripper);
+  Serial.println("  >> Step 7 Completed");
+  delay(800);
+}
+
+// ============================================================
+//   SETUP
+// ============================================================
 void setup() {
+  // *** MUST match Python: serial.Serial('COM6', 115200) ***
   Serial.begin(115200);
 
-  baseServo.attach(PIN_BASE);
-  shoulderServo.attach(PIN_SHOULDER);
-  elbowServo.attach(PIN_ELBOW);
-  gripperServo.attach(PIN_GRIPPER);
+  baseServo.attach(BASE_PIN);
+  shoulderServo.attach(SHOULDER_PIN);
+  elbowServo.attach(ELBOW_PIN);
+  gripperServo.attach(GRIPPER_PIN);
 
-  // ── BOOT SEQUENCE ─────────────────────────────────────────
-  // Step A — All motors to 0° first
-  Serial.println("STATUS: Boot — All motors going to 0°");
+  Serial.println("========================================");
+  Serial.println("  4-DOF Robotic Arm  |  Plastic Sorter ");
+  Serial.println("========================================");
+  Serial.println("  System Initialized");
+  Serial.println("  Moving to Pickup Position...");
 
-  moveSlowly(gripperServo,  posGripper,  0, 25);  delay(800);
-  moveSlowly(elbowServo,    posElbow,    0, 25);  delay(1000);
-  moveSlowly(shoulderServo, posShoulder, 0, 25);  delay(1000);
-  moveSlowly(baseServo,     posBase,     0, 25);  delay(800);
-
-  Serial.println("STATUS: All at 0°");
+  smoothMove(90, 90, 90);  // gripper OPEN
+  gripperServo.write(90); 
   delay(1000);
 
-  // Step B — Move to pickup position
-  goToPickup();
+  printAngles(currentBase, currentShoulder, currentElbow, currentGripper);
+  Serial.println("========================================");
+
+  // *** Handshake: tell Python the arm is ready ***
+  Serial.println("READY");
 }
 
-// ─── LOOP ────────────────────────────────────────────────────
+// ============================================================
+//   LOOP
+// ============================================================
 void loop() {
-  if (Serial.available()) {
-    String waste = Serial.readStringUntil('\n');
-    waste.trim();
-    waste.toLowerCase();
+  if (Serial.available() > 0) {
 
-    Serial.print("STATUS: Received → ");
-    Serial.println(waste);
+    String wasteType = Serial.readStringUntil('\n');
+    wasteType.trim();
+    wasteType.toLowerCase();
 
-    if      (waste == "pet")  sortWaste(BIN_PET);
-    else if (waste == "hdpe") sortWaste(BIN_HDPE);
-    else if (waste == "pvc")  sortWaste(BIN_PVC);
-    else if (waste == "ldpe") sortWaste(BIN_LDPE);
-    else if (waste == "pp")   sortWaste(BIN_PP);
-    else if (waste == "ps")   sortWaste(BIN_PS);
-    else {
-      Serial.println("STATUS: Unknown class ignored");
-      Serial.println("READY");
+    Serial.println("========================================");
+    Serial.print("  Received Waste Type: ");
+    Serial.println(wasteType);
+
+    // Validate and assign base angle
+    assignedBaseAngle = getBaseAngle(wasteType);
+
+    if (assignedBaseAngle == -1) {
+      Serial.println("  [ERROR] Unknown type. Expected: pet|hdpe|pvc|ldpe|pp|ps");
+      Serial.println("========================================");
+      Serial.println("READY");   // still signal ready so Python isn't stuck
+      return;
     }
+
+    Serial.print("  Assigned Base Angle: ");
+    Serial.print(assignedBaseAngle);
+    Serial.println(" deg");
+    Serial.println("  Starting Motion Sequence...");
+    Serial.println("========================================");
+
+    // ---- Full 7-step sequence ----
+    moveToPickup();
+    grabWaste();
+    liftUp();
+    rotateBase();
+    dropWaste();
+    liftAfterDrop();
+    returnToPickup();
+
+    // ---- Done ----
+    Serial.println("========================================");
+    Serial.println("  SEQUENCE COMPLETE");
+    Serial.println("  Arm at Pickup. Awaiting next object.");
+    Serial.println("========================================");
+
+    // *** Handshake: signal Python it can send the next detection ***
+    Serial.println("READY");
   }
 }
